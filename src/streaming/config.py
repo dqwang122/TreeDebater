@@ -71,6 +71,7 @@ class OutputConfig(Validated):
     listening_prefix_review_enabled: bool = False
     listening_prefix_initial_review_enabled: bool = True
     listening_prefix_max_rewrites: int = 2
+    # Deprecated: accepted for old configs, ignored. Calls are telemetry only.
     listening_prefix_max_calls: int = 48
     # Optional lower bound for authored English prefix words before any audio is published.
     listening_prefix_min_words: int = 0

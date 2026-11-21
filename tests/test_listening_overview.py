@@ -83,7 +83,7 @@ def test_many_elaborations_update_body_keep_overview_and_allow_late_rewrite(tmp_
     wait_for(lambda: prep.peek()['text'] == changed)
     prep.close()
     assert len(draft_calls) == 2 and prep._rewrites == 1
-    assert prep._calls <= prep.config.listening_prefix_max_calls
+    assert prep._calls > 0
 
 
 def test_planner_change_without_actual_overview_defect_keeps_text(tmp_path):
@@ -267,13 +267,12 @@ def test_blocked_body_worker_does_not_delay_first_audio_and_closes(audio, tmp_pa
     assert not any('LISTENING BODY FEEDBACK:' in c.kwargs['prompt'] for c in p.helper_client.call_args_list)
 
 
-def test_all_speculative_requests_share_call_cap_and_endpoint_keeps_working(audio, tmp_path):
+def test_legacy_call_cap_does_not_block_preparation_or_endpoint(audio, tmp_path):
     p, history, _ = prepared_player(tmp_path)
-    p.streaming_output_config.listening_prefix_max_calls = 2
+    p.streaming_output_config.listening_prefix_max_calls = 1
     prep = offer_and_wait(p, history)
     wait_for(lambda: prep._body_thread is None)
-    assert prep._calls == 2 and prep.peek()['text'] == PREFIX
-    assert not any(c.kwargs['prompt'].startswith('LISTENING BODY DRAFT:') for c in p.helper_client.call_args_list)
+    assert prep._calls > 1 and prep.peek()['text'] == PREFIX
     p.rebuttal_generation(history, 60, time_control=True)
     assert trace(tmp_path)['status'] == 'completed'
 

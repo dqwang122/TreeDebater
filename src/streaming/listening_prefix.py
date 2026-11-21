@@ -432,7 +432,7 @@ def prepare(data, helper, config, *, endpoint=False, max_time=None,
 
 
 class PreparationStopped(RuntimeError):
-    """No further speculative request fits the lifecycle/call budget."""
+    """Preparation was frozen or closed; no new requests may start."""
 
 
 def synthesize_prefix(text, config):
@@ -472,7 +472,7 @@ class PrefixPreparation:
         self.initial_review = InitialPrefixReview()
         self._failed_frameworks = set()
         self._pending_review = None
-        # Retry a format-only failure once after new speech, within the shared call cap.
+        # Retry a format-only failure once after new speech.
         self._format_failures = {}
         self._last_body_stamp = None
         self._body_started_input = None
@@ -481,11 +481,9 @@ class PrefixPreparation:
 
     def _complete(self, *, body=False, authoring=False, **kwargs):
         with self._lock:
-            # Leave capacity for a meaningful late overview correction. Ordinary
-            # body updates cannot consume this reserve. Endpoint work is separate.
-            cap = max(0, self.config.listening_prefix_max_calls - 8) if body else self.config.listening_prefix_max_calls
-            if self._stopped or self._calls >= cap:
-                raise PreparationStopped('Speculative call budget exhausted or turn frozen')
+            # Count requests for telemetry; freeze/close controls their lifecycle.
+            if self._stopped:
+                raise PreparationStopped('Speculative turn frozen')
             self._calls += 1
         return (self.author if authoring else self.helper)(**kwargs)
 
@@ -542,7 +540,7 @@ class PrefixPreparation:
             self._scope = scope
             # Freeze stops speculative requests, not completed observer snapshots.
             self._context_latest = copy.deepcopy(data)
-            if self._stopped or self._calls >= self.config.listening_prefix_max_calls:
+            if self._stopped:
                 return
             if data.get('planning_pending'):
                 # WAIT retains new input, but cannot launch drafts from stale
