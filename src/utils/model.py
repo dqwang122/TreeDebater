@@ -1,3 +1,4 @@
+from utils.proxy_models import is_proxy_model, fixed_sampling
 import time
 import math
 import os
@@ -103,9 +104,14 @@ def HelperClient(
     messages = helper_messages(prompt, sys=sys, history_messages=history_messages)
 
     kwargs = {}
-    if os.environ.get("DEBATE_LLM_API_BASE"):
+    if model == "gpt-6.1-sol":
+        model_name = "openai/gpt-6.1-sol"
+        kwargs = {"api_base": os.environ.get("DEBATE_LLM_API_BASE", "http://127.0.0.1:4000/v1"),
+                  "api_key": os.environ.get("DEBATE_LLM_API_KEY", "local-proxy"),
+                  "extra_body": {"reasoning_effort": "low", "service_tier": "default"}}
+    elif os.environ.get("DEBATE_LLM_API_BASE") or is_proxy_model(model):
         model_name = model if model.startswith("openai/") else "openai/" + model
-        kwargs = {"api_base": os.environ["DEBATE_LLM_API_BASE"],
+        kwargs = {"api_base": os.environ.get("DEBATE_LLM_API_BASE", "http://127.0.0.1:4000/v1"),
                   "api_key": os.environ.get("DEBATE_LLM_API_KEY", "local-proxy")}
     elif "llama" in model.lower():
         model_name = f"together_ai/{model}"
@@ -213,6 +219,9 @@ def _completion_text(model_name: str, messages, wants_json: bool, temperature: f
         stop=stop,
         **kwargs,
     )
+    if fixed_sampling(model_name):
+        call_kwargs.pop("temperature", None)
+        call_kwargs.pop("stop", None)
     if wants_json:
         call_kwargs["response_format"] = {"type": "json_object"}
     retries = call_kwargs.pop('num_retries', 3)
@@ -272,9 +281,8 @@ def _completion_structured(
             model=model_name,
             messages=messages,
             response_model=response_model,
-            temperature=temperature,
+            **({} if fixed_sampling(model_name) else {"temperature": temperature, "stop": stop}),
             max_tokens=max_tokens,
-            stop=stop,
             **kwargs,
         )
     raise RuntimeError("Installed instructor version does not support from_litellm.")

@@ -255,6 +255,48 @@ If you wish to use Agent4Debate as a baseline or component, install and run its 
 - Repo: [Agent4Debate](https://github.com/zhangyiqun018/agent-for-debate)
 - Typical usage: run `python main.py` in its backend to start the debate server.
 
+### DeepDebater phased backend on Babel
+
+`src/configs/overlap_debate_base.yml` targets DeepDebater's three-phase HTTP
+adapter with `google.gemma-4-26b-a4b`. Run the backend and TreeDebater on
+`babel-n5-20`, where both the evidence database and loopback model proxy are
+available:
+
+```bash
+cd /home/danqingw/workspace/clone/DeepDebater
+: "${BUDGET_USD:?Set the model budget for this run}"
+.venv/bin/python -m deep_debater.phase_server \
+  --port 8082 --db debate_evidence_full_buzzhpc.duckdb \
+  --state-dir "work/backend-$(date +%Y%m%d-%H%M%S)" \
+  --budget-usd "$BUDGET_USD"
+```
+
+In the TreeDebater terminal, configure the local proxy:
+
+```bash
+export DEBATE_LLM_API_BASE=http://127.0.0.1:4000/v1
+export DEBATE_LLM_API_KEY=local-proxy
+```
+
+These settings are also needed
+for Gemma client initialization and any judge/helper requests. The phase
+server's budget covers only its own model calls. This configuration retains
+host speech timing (`time_control: True`), which can invoke audio processing;
+use `time_control: False` for a text-only check. A healthy backend responds to
+`curl --fail http://127.0.0.1:8082/health`. Health alone does not test generation.
+
+Agent4Debate uses `google.gemma-4-26b-a4b` for every role, including its
+writer, searcher, reviewer, analyzer, manager, and information synthesizer.
+TreeDebater generation and internal audience feedback use the debater's model
+(Gemma in the current Babel configuration); its built-in judge and benchmark
+judging defaults are also Gemma. DeepDebater's generation, evidence review,
+and coaching use Gemma. Only the standalone final-quality assessment in
+DeepDebater and the Debatrix judging system use `gpt-6.1-sol`, with Bedrock
+Standard service and `low` reasoning. The proxy preserves output limits while
+translating older clients' `max_tokens` to `max_completion_tokens` for Sol.
+Start a new DeepDebater state directory after changing this role policy so
+results generated with the previous internal-review model cannot be reused.
+
 
 ## 📚 Citation
 

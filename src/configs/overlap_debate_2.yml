@@ -39,9 +39,11 @@ debater:
     pool_file: ../results/deepseek-chat/learning_to_be_a_good_writer_still_matters_in_the_age_of_ai_pool_against.json
 
 judge:
+  model: google.gemma-4-26b-a4b
   temperature: 0.0
 
 audience:
+  model: google.gemma-4-26b-a4b
   temperature: 1
 
 # CLI overrides > these settings > defaults in streaming/config.py.

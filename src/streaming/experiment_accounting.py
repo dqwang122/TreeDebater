@@ -14,7 +14,8 @@ import math
 
 MODEL_RATES = {"google.gemma-4-26b-a4b": (0.13, 0.40),
                "nvidia.nemotron-super-3-120b": (0.15, 0.65),
-               "gpt-5.6-sol": (4.40, 22.00)}
+               "gpt-5.6-sol": (4.40, 22.00),
+               "gpt-6.1-sol": (2.20, 11.00)}
 SETTLEMENT_MARGIN = 4
 
 
@@ -68,7 +69,7 @@ def reported_cost(artifact):
         raise AuditMismatch('Invalid token counters')
     if 'total_tokens' in usage and usage['total_tokens'] != i + o:
         raise AuditMismatch('Token counters do not sum')
-    if model == 'gpt-5.6-sol' and i > 272_000:
+    if model in ('gpt-5.6-sol', 'gpt-6.1-sol') and i > 272_000:
         raise AuditMismatch('Observed usage exceeds verified pricing tier')
     price_in, price_out = MODEL_RATES[model]
     return i, o, (i*price_in + o*price_out)/1_000_000

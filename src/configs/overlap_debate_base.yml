@@ -1,5 +1,8 @@
-# Example: overlapping streaming listen + streaming TTS (see streaming/overlap.py; run: python -m streaming.overlap).
-# Both sides must be treedebater for per-turn StreamingInputEnv; set streaming_listen on listeners.
+# DeepDebater-phased baseline on the same compute node, port 8082.
+# Start deep_debater.phase_server with its default Gemma model and temperature 0.7.
+# TreeDebater also needs DEBATE_LLM_API_BASE=http://127.0.0.1:4000/v1
+# and DEBATE_LLM_API_KEY set for the local proxy (see README).
+# Both sides use the HTTP baseline; streaming listening is disabled.
 
 env:
   motion: Learning to be a good writer still matters in the age of ai
@@ -15,28 +18,30 @@ env:
 
 debater:
   - side: for
-    model: deepseek-chat
+    model: google.gemma-4-26b-a4b
     type: baseline
     url: http://127.0.0.1:8082/
-    temperature: 1.0
-    helper_model: deepseek-chat
+    temperature: 0.7
+    helper_model: google.gemma-4-26b-a4b
     streaming_tts: False
     streaming_listen: False
 
   - side: against
-    model: deepseek-chat
+    model: google.gemma-4-26b-a4b
     type: baseline
     url: http://127.0.0.1:8082/
-    temperature: 1.0
+    temperature: 0.7
     use_retrieval: True
-    helper_model: deepseek-chat
+    helper_model: google.gemma-4-26b-a4b
     streaming_tts: False
     streaming_listen: False
 
 judge:
+  model: google.gemma-4-26b-a4b
   temperature: 0.0
 
 audience:
+  model: google.gemma-4-26b-a4b
   temperature: 1
 
 # CLI overrides > these settings > defaults in streaming/config.py.
@@ -55,7 +60,7 @@ streaming:
   output:
     model: tts-1
     voice: echo
-    refinement_model: gpt-5-mini
+    refinement_model: google.gemma-4-26b-a4b
     max_refinements: 10
     early_max_refinements: 3
     max_parallel_tts: 8

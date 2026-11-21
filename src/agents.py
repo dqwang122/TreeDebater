@@ -1,3 +1,4 @@
+from utils.proxy_models import is_proxy_model, fixed_sampling
 import copy
 import json
 import logging
@@ -78,12 +79,14 @@ class DebaterConfig(AgentConfig):
 
 @dataclass
 class JudgeConfig(AgentConfig):
+    model: str = "google.gemma-4-26b-a4b"
     system_prompt: str = judge_system_prompt
     temperature: float = 0.0
 
 
 @dataclass
 class AudienceConfig(AgentConfig):
+    model: str = "google.gemma-4-26b-a4b"
     pre_prompt: str = audience_system_prompt_pre
     post_prompt: str = audience_system_prompt_post
     temperature: float = 1.0
@@ -95,13 +98,21 @@ class Agent:
         self.config = config
         self.system_prompt = config.system_prompt
         print(f"[Agent Init] Model: {self.config.model}")
-        if os.environ.get("DEBATE_LLM_API_BASE"):
+        if self.config.model == "gpt-6.1-sol":
+            self.client = partial(
+                litellm.completion, model="openai/gpt-6.1-sol",
+                api_base=os.environ.get("DEBATE_LLM_API_BASE", "http://127.0.0.1:4000/v1"),
+                api_key=os.environ.get("DEBATE_LLM_API_KEY", "local-proxy"),
+                max_tokens=self.config.max_tokens,
+                extra_body={"reasoning_effort": "low", "service_tier": "default"},
+            )
+        elif os.environ.get("DEBATE_LLM_API_BASE") or is_proxy_model(self.config.model):
             self.client = partial(
                 litellm.completion,
                 model=self.config.model if self.config.model.startswith("openai/") else "openai/" + self.config.model,
-                api_base=os.environ["DEBATE_LLM_API_BASE"],
+                api_base=os.environ.get("DEBATE_LLM_API_BASE", "http://127.0.0.1:4000/v1"),
                 api_key=os.environ.get("DEBATE_LLM_API_KEY", "local-proxy"),
-                temperature=self.config.temperature,
+                **({} if fixed_sampling(self.config.model) else {"temperature": self.config.temperature}),
                 max_tokens=self.config.max_tokens,
             )
         elif self.config.model.startswith("gpt") or self.config.model.startswith("o1"):
@@ -273,6 +284,9 @@ class Agent:
         kwargs.pop("time_control", None)
         kwargs.pop("streaming_tts", None)
         kwargs.pop("streaming_listen", None)
+        if fixed_sampling(self.config.model):
+            kwargs.pop("temperature", None)
+            kwargs.pop("stop", None)
         retry = 0
         while retry < 3:
             try:
@@ -382,7 +396,7 @@ class Debater(Agent):
         response = self.speak(prompt, **kwargs)
         return response
 
-    def post_process(self, statement, max_time=-1, time_control=False, streaming_tts=None, **kwargs):
+    def post_process(self, statement, max_time=-1, time_control=False, streaming_tts=None, defer_tts=False, **kwargs):
         """
         statement: AI生成的原始辩论陈述文本
         max_time: 最大允许的发言时间（秒），-1表示无限制
@@ -421,7 +435,9 @@ class Debater(Agent):
                 if len(trunc_statement) > 0:
                     statement = trunc_statement
 
-        if max_time <= 0 or not time_control:
+        # Native TreeDebater length revision has already run in speak().
+        # An external delivery adapter may synthesize the final text locally.
+        if max_time <= 0 or not time_control or defer_tts:
             self._add_message("assistant", f"{statement}")
             st = statement.strip()
             if io_logging_enabled():

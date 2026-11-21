@@ -101,6 +101,21 @@ def test_expensive_judge_cannot_silently_enter_a_different_context_price_tier(tm
     http.assert_not_called()
 
 
+def test_sol61_judge_uses_own_price_and_supported_reasoning(tmp_path, monkeypatch):
+    http = Mock(return_value=response())
+    monkeypatch.setattr("streaming.experiment_client.urlopen", http)
+    client = BudgetedClient(tmp_path, cap=1)
+    client.complete([{"role": "user", "content": "Judge this"}],
+                    model="gpt-6.1-sol", max_tokens=800, json_mode=True)
+    body = json.loads(http.call_args.args[0].data)
+    assert body["reasoning_effort"] == "low"
+    assert "temperature" not in body
+    assert client.summary()["reported_usage_estimate_usd"] == pytest.approx((20*2.2 + 2*11)/1e6)
+    with pytest.raises(ValueError, match="short-context"):
+        client.complete([{"role": "user", "content": "x"*272000}], model="gpt-6.1-sol")
+    assert http.call_count == 1
+
+
 def test_empty_completion_retains_reported_usage_and_truncation(tmp_path, monkeypatch):
     result = response()
     result.read.return_value = json.dumps({

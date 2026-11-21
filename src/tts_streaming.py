@@ -10,6 +10,8 @@ Key features vs the serial pipeline in tts.py:
   - Configurable length edits: shorten-only mode and optional meaning checks protect the original text; model checks remain fallible.
 """
 
+from utils.proxy_models import is_proxy_model
+
 import concurrent.futures
 import csv
 import json
@@ -144,15 +146,20 @@ def _estimate_duration(text: str, *, measured_seconds_per_word=None, client=None
 
 def _text_request(client, model, messages, max_tokens, *, json_mode=False):
     """Use the configured rewrite model; Gemma may use the existing local proxy."""
+    if model.startswith('openai/'):
+        model = model.split('/', 1)[1]
     options = {}
     owned = None
     if "deepseek" in model.lower():
         owned = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com")
         model = model.split("/", 1)[-1]
         options["extra_body"] = {"thinking": {"type": "disabled"}}
-    elif model.startswith('google.gemma') and os.environ.get('DEBATE_LLM_API_BASE'):
-        owned = OpenAI(base_url=os.environ['DEBATE_LLM_API_BASE'],
-                       api_key=os.environ.get('DEBATE_LLM_API_KEY') or 'local-proxy')
+    elif is_proxy_model(model) or model.startswith('google.gemma'):
+        owned = OpenAI(base_url=os.environ.get('DEBATE_LLM_API_BASE', 'http://127.0.0.1:4000/v1'),
+                       api_key=os.environ.get('DEBATE_LLM_API_KEY') or 'local-proxy',
+                       timeout=120.0)
+        if model == 'gpt-6.1-sol':
+            options.update(reasoning_effort='low', service_tier='default')
     elif model == 'gpt-5-mini':
         options['reasoning_effort'] = 'minimal'
     if owned is None and client is None:

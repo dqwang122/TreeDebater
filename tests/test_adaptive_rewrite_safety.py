@@ -19,14 +19,16 @@ def test_split_keeps_seven_day_limit_and_question_pause_in_same_sentence():
     assert ' '.join(chunks) == sentence + ' Funding needs review.'
 
 
-def test_gemma_rewrite_and_json_review_use_configured_proxy_and_close_client(monkeypatch):
+@pytest.mark.parametrize('model', ['google.gemma-test', 'openai/google.gemma-test'])
+def test_gemma_rewrite_and_json_review_use_configured_proxy_and_close_client(monkeypatch, model):
     factory, client = Mock(), Mock()
     factory.return_value = client
     monkeypatch.setattr(tts, 'OpenAI', factory)
     monkeypatch.setenv('DEBATE_LLM_API_BASE', 'http://localhost:4321/v1')
     monkeypatch.setenv('DEBATE_LLM_API_KEY', 'local-test')
-    tts._text_request(Mock(), 'google.gemma-test', [], 400, json_mode=True)
-    factory.assert_called_once_with(base_url='http://localhost:4321/v1', api_key='local-test')
+    tts._text_request(Mock(), model, [], 400, json_mode=True)
+    factory.assert_called_once_with(base_url='http://localhost:4321/v1', api_key='local-test', timeout=120.0)
+    assert client.chat.completions.create.call_args.kwargs['model'] == 'google.gemma-test'
     assert client.chat.completions.create.call_args.kwargs['response_format'] == {'type': 'json_object'}
     client.close.assert_called_once()
 

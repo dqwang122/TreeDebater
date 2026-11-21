@@ -65,13 +65,13 @@ class BudgetedClient:
             raise ValueError("Experiment output cap must be between 1 and 4096 tokens")
         body = {"model": model, "messages": messages, "max_tokens": max_tokens,
                 "temperature": temperature, "num_retries": 0}
-        if model == "gpt-5.6-sol":
-            body["reasoning_effort"] = "none"
+        if model in ("gpt-5.6-sol", "gpt-6.1-sol"):
+            body["reasoning_effort"] = "low" if model == "gpt-6.1-sol" else "none"
             body.pop("temperature")  # this Bedrock route rejects temperature even with no reasoning
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         raw = json.dumps(body, ensure_ascii=False).encode()
-        if model == "gpt-5.6-sol" and len(raw) + 8192 > 272_000:
+        if model in ("gpt-5.6-sol", "gpt-6.1-sol") and len(raw) + 8192 > 272_000:
             raise ValueError("GPT judge request exceeds the verified short-context price bound")
         # UTF-8 bytes upper-bound text token counts; ample margin covers chat framing.
         # Preserve the original $1/M floor, but use higher rates for expensive judges.

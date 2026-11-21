@@ -60,7 +60,7 @@ def make_player(case, mode, client, tree_limits=None):
         if '_completion' in kwargs:
             from agents import Agent
             return Agent._get_response(this, messages, **kwargs)
-        return client.complete(messages, max_tokens=1600, temperature=0.3,
+        return client.complete(messages, model=this.config.model, max_tokens=1600, temperature=0.3,
                                json_mode=kwargs.get('response_format', {}).get('type') == 'json_object')
 
     def helper(prompt, sys=None, response_model=None, max_tokens=1600, **kwargs):
@@ -70,7 +70,7 @@ def make_player(case, mode, client, tree_limits=None):
         if response_model is not None:
             prompt += "\nReturn JSON matching this schema:\n" + json.dumps(response_model.model_json_schema())
         messages.append({"role": "user", "content": prompt})
-        return [client.complete(messages, max_tokens=max_tokens, temperature=0,
+        return [client.complete(messages, model=kwargs.get("model", MODEL), max_tokens=max_tokens, temperature=0,
                                 json_mode=response_model is not None)]
 
     p.helper_client = helper
@@ -212,7 +212,7 @@ def main():
     ap.add_argument("--limit", type=int)
     ap.add_argument("--case-id")
     ap.add_argument("--cases-file", type=Path)
-    ap.add_argument("--judge-model", choices=(MODEL, "nvidia.nemotron-super-3-120b", "gpt-5.6-sol"), default=MODEL)
+    ap.add_argument("--judge-model", choices=(MODEL,), default=MODEL)
     ap.add_argument("--judge-max-tokens", type=int, choices=range(1, 4097))
     ap.add_argument("--max-tree-targets", type=int, default=8)
     ap.add_argument("--max-tree-context-nodes", type=int, default=16)
@@ -246,8 +246,8 @@ def main():
                 "judge_max_tokens": args.judge_max_tokens or (4096 if args.judge_model.startswith("nvidia.") else 800),
                 "prior_context": "fixed shared speeches, setup calls included in cost and reported separately from live latency",
                 "main_temperature": 0.3, "helper_temperature": 0,
-                "judge_temperature": "unsupported; omitted" if args.judge_model == "gpt-5.6-sol" else 0,
-                "judge_reasoning_effort": "none" if args.judge_model == "gpt-5.6-sol" else "provider default",
+                "judge_temperature": 0,
+                "judge_reasoning_effort": "provider default",
                 "matching": "exact string targets; embedding fallback disabled for every mode",
                 "latency": "measured call times on simulated 2.3 words/sec serial input schedule; text only",
                 "generation": "real TreeDebater.rebuttal_generation + one feedback/revision pass; 60-second word budget; no TTS"}
