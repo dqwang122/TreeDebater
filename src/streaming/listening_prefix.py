@@ -885,7 +885,8 @@ def speak_with_listening_prefix(player, max_time, history, config, kwargs, *, st
     from .body_audio import FirstBodyAudio
     body_audio = FirstBodyAudio(config, start)
     prefix_duration = Future()
-    stream_body = config.listening_single_body_revision and config.listening_stream_body_revision
+    stream_body = (config.listening_single_body_revision and config.listening_stream_body_revision
+                   and not config.enforce_duration_budget)
     tail_ready = Future()
     revision_streams = []
     selected_stream = None
@@ -1386,6 +1387,16 @@ def speak_with_listening_prefix(player, max_time, history, config, kwargs, *, st
             def run_tail():
                 try:
                     result = tail_work()
+                    if config.enforce_duration_budget:
+                        tail, timing = result
+                        remaining = max_time - prefix_duration.result()
+                        tail, fit = tts_streaming.fit_body_to_budget(
+                            tail, remaining, config=config, prefix=prefix,
+                            motion=player.motion, side=player.side)
+                        trace['body_duration_fit'] = fit
+                        timing['end_seconds'] = time.perf_counter() - start
+                        result = tail, timing
+                        save()
                     if not tail_ready.done():
                         tail_ready.set_result(result[0])
                     return result

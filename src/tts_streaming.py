@@ -240,6 +240,48 @@ def _revise_to_n_words(client, text: str, n_words: int, prev_texts: List[str], n
     return (resp.choices[0].message.content or "").strip()
 
 
+def fit_body_to_budget(text, remaining, *, config, prefix='', motion='', side=''):
+    """Fit the complete unpublished body before its paragraphs become immutable."""
+    if remaining <= 0:
+        raise RuntimeError('Speech duration budget exhausted before body revision')
+    target = remaining * .85  # Leave room for estimator error and natural TTS pauses.
+    original = text
+    attempts = []
+    best_text, best_estimate = text, float('inf')
+    previous_words = None
+    for attempt in range(7):
+        estimate = estimate_statement_seconds(text, config)
+        attempts.append(dict(words=LengthEstimator.count_words(text), estimated_seconds=estimate))
+        if estimate < best_estimate:
+            best_text, best_estimate = text, estimate
+        if estimate <= target:
+            return text, dict(remaining_seconds=remaining, target_seconds=target, attempts=attempts)
+        # Three revisions normally suffice. Allow up to three more only while
+        # duration is still improving materially and the hard budget is unmet.
+        # Do not spend extra calls chasing the optional safety margin.
+        if attempt >= 3 and (best_estimate <= remaining or attempt == 6 or
+                             estimate >= attempts[-2]['estimated_seconds'] * .95):
+            break
+        words = max(1, min(speech_length.draft_word_budget(target),
+                           int(LengthEstimator.count_words(text) * target / estimate)))
+        if previous_words is not None:
+            words = max(1, min(words, int(previous_words * .75)))
+        previous_words = words
+        text = _revise_to_n_words(None, best_text, words, [prefix] if prefix else [],
+            model=config.refinement_model, motion=motion, side=side, source_text=original)
+        if not text.strip():
+            raise RuntimeError('Duration revision returned an empty body')
+    # The 15% margin is a soft target, not extra time removed from the user's
+    # budget. Actual synthesized audio still passes the hard duration guard.
+    if best_estimate <= remaining:
+        return best_text, dict(remaining_seconds=remaining, target_seconds=target,
+                              attempts=attempts, used_safety_margin=True)
+    raise RuntimeError(
+        'Body could not be shortened to the remaining speech duration budget '
+        f'(remaining={remaining:.2f}s, shortest_estimate={best_estimate:.2f}s, '
+        f'word_counts={[a["words"] for a in attempts]})')
+
+
 def _validate_tts_input(content):
     if len(content) > TTS_INPUT_LIMIT:
         raise ValueError(f'TTS input exceeds {TTS_INPUT_LIMIT} characters; split it before synthesis')
@@ -329,6 +371,7 @@ def _pick_best_completed(
     candidates: List[_TtsCandidate],
     target_s: float,
     deadline: Optional[float] = None,
+    max_audio_seconds: Optional[float] = None,
 ) -> Tuple[_TtsCandidate, Dict]:
     def _collect_done() -> List[Tuple[_TtsCandidate, Dict]]:
         out = []
@@ -361,6 +404,19 @@ def _pick_best_completed(
     if not done:
         raise RuntimeError("All parallel TTS candidates failed.")
 
+    # A shorter, safe original beats a closer but oversized length edit.
+    # If the original is still synthesizing, let it finish before rejecting the
+    # speech on the strength of an oversized completed edit alone.
+    if max_audio_seconds is not None:
+        if not any(out['audio_seconds'] <= max_audio_seconds for _, out in done):
+            originals = [c.future for c in candidates
+                         if not c.obsolete and c.intra_iter == 0 and not c.future.done()]
+            if originals:
+                concurrent.futures.wait(originals)
+                done = _collect_done()
+        fitting = [(c, out) for c, out in done if out['audio_seconds'] <= max_audio_seconds]
+        if fitting:
+            done = fitting
     return min(done, key=lambda x: abs(x[1]["audio_seconds"] - target_s))
 
 
@@ -507,7 +563,8 @@ class _ChunkRefineContext:
                 self._target_s = target_s
                 self._tol_s = tol_s
                 self._tol_upper_s = tol_upper_s
-            if (self.config.adaptive_delivery and self.chosen_tts_out is not None
+            if ((self.config.adaptive_delivery or self.config.enforce_duration_budget or not self.config.allow_expansion)
+                    and self.chosen_tts_out is not None
                     and not _in_range(self.chosen_tts_out['audio_seconds'], target_s, tol_s, tol_upper_s,
                                       allow_short=not self.config.allow_expansion)):
                 self.chosen_cand = None
@@ -618,7 +675,7 @@ class _ChunkRefineContext:
             if self.done_event.is_set() or (self.config.adaptive_delivery
                     and (self.stop_event.is_set() or self.refinement_expired())):
                 return False
-            if ((self.config.adaptive_delivery or not self.config.allow_expansion)
+            if ((self.config.adaptive_delivery or self.config.enforce_duration_budget or not self.config.allow_expansion)
                     and not _in_range(tts_out['audio_seconds'], *self.get_target(),
                                       allow_short=not self.config.allow_expansion)):
                 return False
@@ -658,13 +715,13 @@ def _refine_worker(ctx: _ChunkRefineContext, label: str) -> None:
     target_s, tol_s, tol_upper_s = ctx.get_target()
     cand = ctx.add_candidate(cur, est, label, intra_iter=0)
 
-    if (cand.future.done() or (ctx.config.adaptive_delivery and not ctx.parallel_refinement)
+    if (cand.future.done() or ((ctx.config.adaptive_delivery or ctx.config.enforce_duration_budget) and not ctx.parallel_refinement)
             or _in_range(est, target_s, tol_s, tol_upper_s, allow_short=not ctx.config.allow_expansion)):
         try:
             tts_out = cand.future.result()
             if ctx.try_adopt(cand, tts_out):
                 return
-            if ctx.config.adaptive_delivery:
+            if ctx.config.adaptive_delivery or ctx.config.enforce_duration_budget:
                 est = float(tts_out['audio_seconds'])
         except Exception:
             pass
@@ -697,7 +754,8 @@ def _refine_worker(ctx: _ChunkRefineContext, label: str) -> None:
                 cur = _revise_to_n_words(ctx.client, cur, tw, list(worker_scope.preceding),
                     worker_scope.following, model=ctx.config.refinement_model, motion=ctx.motion,
                     side=ctx.side, source_text=worker_scope.source)
-            except Exception:
+            except Exception as exc:
+                logger.warning('Duration rewrite failed (%s); only budget-compliant audio may be published when enforcement is enabled.', type(exc).__name__)
                 break
             ctx.add_llm_time(label, _now() - t)
         n_ref_local += 1
@@ -743,13 +801,13 @@ def _refine_worker(ctx: _ChunkRefineContext, label: str) -> None:
             break
 
         target_s, tol_s, tol_upper_s = ctx.get_target()
-        if (cand.future.done() or (ctx.config.adaptive_delivery and not ctx.parallel_refinement)
+        if (cand.future.done() or ((ctx.config.adaptive_delivery or ctx.config.enforce_duration_budget) and not ctx.parallel_refinement)
                 or _in_range(est, target_s, tol_s, tol_upper_s, allow_short=not ctx.config.allow_expansion)):
             try:
                 tts_out = cand.future.result()
                 if ctx.try_adopt(cand, tts_out):
                     return
-                if ctx.config.adaptive_delivery:
+                if ctx.config.adaptive_delivery or ctx.config.enforce_duration_budget:
                     est = float(tts_out['audio_seconds'])
             except Exception:
                 pass
@@ -1116,6 +1174,8 @@ def _run_pipeline(
             total_chars_initial = sum(len(c) for c in segments_list)
             if i >= len(segments_list):
                 break
+        if cfg.enforce_duration_budget and audio_budget_remaining <= 0:
+            raise RuntimeError('Speech duration budget exhausted before the remaining text could be delivered')
         chunk = segments_list[i]
         n_chunks = len(segments_list)  # may grow due to early-cut
 
@@ -1155,6 +1215,10 @@ def _run_pipeline(
             if remaining_chunks == 1 and stream_finished
             else tol_s
         )
+
+        if cfg.enforce_duration_budget:
+            # Chunk tolerance must not authorize audio the final budget guard rejects.
+            tol_upper_s = min(tol_upper_s, max(0., audio_budget_remaining + cfg.min_tolerance_seconds - target_s))
 
         max_ref = cfg.early_max_refinements if (not stream_finished or i < n_chunks // 2) else cfg.max_refinements
         next_chunk_text = segments_list[i + 1] if i + 1 < len(segments_list) else ""
@@ -1311,7 +1375,10 @@ def _run_pipeline(
                 if not snap:
                     raise RuntimeError(f"Chunk {i}: no candidates produced")
                 target_now, _, _ = ctx.get_target()
-                chosen_cand, tts_out = _pick_best_completed(snap, target_now, deadline=ctx.refinement_deadline)
+                chosen_cand, tts_out = _pick_best_completed(
+                    snap, target_now, deadline=ctx.refinement_deadline,
+                    max_audio_seconds=(audio_budget_remaining + cfg.min_tolerance_seconds
+                                       if cfg.enforce_duration_budget else None))
                 in_range = _in_range(tts_out['audio_seconds'], *ctx.get_target(),
                                      allow_short=not cfg.allow_expansion)
                 timed_out = deadline_expired
@@ -1461,6 +1528,12 @@ def _run_pipeline(
         audio_seconds = len(seg) / 1000.0
         in_range = _in_range(audio_seconds, target_s, tol_s, tol_upper_s,
                              allow_short=not cfg.allow_expansion and not (i == 0 and cfg.first_chunk_local_tempo))
+
+        # Check measured audio before publishing: never silently play an oversized fallback.
+        if cfg.enforce_duration_budget and audio_seconds > audio_budget_remaining + cfg.min_tolerance_seconds:
+            raise RuntimeError(
+                f'Speech duration budget exceeded: chunk {i} is {audio_seconds:.2f}s '
+                f'with {audio_budget_remaining:.2f}s remaining')
 
         # ---- budget tracking ----
         if validate_chunk is not None:

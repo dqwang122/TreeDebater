@@ -43,7 +43,7 @@ def test_length_edit_publishes_without_extra_review(audio, tmp_path, monkeypatch
     query.side_effect = lambda client, text, *a, **kw: encoded(1 if text == prefix else 10 if text == original else 4.9)
     seen = []
     tts.convert_text_to_speech_streaming(prefix, str(tmp_path / 'speech.mp3'), 6,
-        config=OutputConfig(adaptive_delivery=True, normalize_seams=False, first_chunk_seconds=1,
+        config=OutputConfig(adaptive_delivery=True, enforce_duration_budget=True, normalize_seams=False, first_chunk_seconds=1,
             max_refinements=1, early_max_refinements=1, speed_adjust_min=1, speed_adjust_max=1,
             allow_expansion=False), tail_supplier=lambda: original,
         on_chunk=lambda i, p, text, duration: seen.append(text))
@@ -77,7 +77,7 @@ def test_enabled_expansion_publishes_without_extra_review(audio, tmp_path, monke
     query.side_effect = lambda client, text, *a, **kw: encoded(1 if text != candidate else 4.9)
     seen = []
     tts.convert_text_to_speech_streaming(prefix, str(tmp_path / 'speech.mp3'), 6,
-        config=OutputConfig(adaptive_delivery=True, normalize_seams=False, first_chunk_seconds=1,
+        config=OutputConfig(adaptive_delivery=True, enforce_duration_budget=True, normalize_seams=False, first_chunk_seconds=1,
             max_refinements=1, early_max_refinements=1, speed_adjust_min=1, speed_adjust_max=1,
             allow_expansion=True), tail_supplier=lambda: original,
         on_chunk=lambda i, p, text, duration: seen.append((text, duration)))
@@ -94,3 +94,96 @@ def test_frozen_prefix_honors_two_pass_whole_review_setting(audio, tmp_path):
     assert player._length_adjust.call_count == 2
     assert 'frozen_prefix' not in player._length_adjust.call_args_list[0].kwargs
     assert player._length_adjust.call_args_list[1].kwargs['frozen_prefix'] == 'Who funds the trial?'
+
+
+@pytest.mark.parametrize('model', ['google.gemma-4-26b-a4b', 'openai/google.gemma-4-26b-a4b'])
+def test_gemma_duration_rewrite_defaults_to_same_proxy_as_generation(monkeypatch, model):
+    monkeypatch.delenv('DEBATE_LLM_API_BASE', raising=False)
+    monkeypatch.delenv('DEBATE_LLM_API_KEY', raising=False)
+    factory = Mock()
+    monkeypatch.setattr(tts, 'OpenAI', factory)
+    speech_client = Mock()
+    tts._text_request(speech_client, model, [], 100)
+    factory.assert_called_once_with(base_url='http://127.0.0.1:4000/v1', api_key='local-proxy', timeout=120.0)
+    speech_client.chat.completions.create.assert_not_called()
+    factory.return_value.close.assert_called_once()
+
+
+@pytest.mark.parametrize('failure', ['error', 'unchanged'])
+def test_budget_enforcement_does_not_publish_oversized_fallback(audio, tmp_path, monkeypatch, failure):
+    query, encoded = audio
+    prefix, body = 'Our opening.', 'This body exceeds the remaining budget.'
+    query.side_effect = lambda client, text, *a, **kw: encoded(1 if text == prefix else 20)
+    rewrite = Mock(side_effect=RuntimeError('provider unavailable')) if failure == 'error' else Mock(return_value=body)
+    monkeypatch.setattr(tts, '_revise_to_n_words', rewrite)
+    seen = []
+    with pytest.raises(RuntimeError, match='Speech duration budget exceeded'):
+        tts.convert_text_to_speech_streaming(prefix, str(tmp_path / 'speech.mp3'), 6,
+            config=OutputConfig(adaptive_delivery=True, enforce_duration_budget=True,
+                normalize_seams=False, first_chunk_seconds=1, max_refinements=1,
+                early_max_refinements=1, speed_adjust_min=1, speed_adjust_max=1,
+                allow_expansion=False), tail_supplier=lambda: body,
+            on_chunk=lambda i, p, text, duration: seen.append(text))
+    assert seen == [prefix]
+
+
+def test_body_is_shortened_as_a_whole_before_paragraph_publication(monkeypatch):
+    original = 'First lengthy argument.\n\nSecond lengthy argument.'
+    compact = 'Both arguments need evidence.'
+    monkeypatch.setattr(tts, 'estimate_statement_seconds', lambda text, cfg: 100 if text == original else 10)
+    rewrite = Mock(return_value=compact)
+    monkeypatch.setattr(tts, '_revise_to_n_words', rewrite)
+    text, trace = tts.fit_body_to_budget(original, 14, config=OutputConfig(), prefix='Opening.')
+    assert text == compact
+    assert trace['attempts'][-1]['estimated_seconds'] <= trace['target_seconds']
+    assert rewrite.call_args.args[1] == original
+    assert rewrite.call_args.kwargs['source_text'] == original
+
+
+def test_body_fit_does_not_accept_model_that_ignores_length(monkeypatch):
+    monkeypatch.setattr(tts, 'estimate_statement_seconds', lambda text, cfg: 100)
+    rewrite = Mock(return_value='Still too long.')
+    monkeypatch.setattr(tts, '_revise_to_n_words', rewrite)
+    with pytest.raises(RuntimeError, match='could not be shortened'):
+        tts.fit_body_to_budget('Too long.', 14, config=OutputConfig())
+    assert rewrite.call_count == 3
+
+
+def test_body_fit_uses_real_budget_when_only_safety_margin_is_exceeded(monkeypatch):
+    monkeypatch.setattr(tts, 'estimate_statement_seconds', lambda text, cfg: 13)
+    monkeypatch.setattr(tts, '_revise_to_n_words', Mock(return_value='Still fits.'))
+    text, trace = tts.fit_body_to_budget('Original fits.', 14, config=OutputConfig())
+    assert text == 'Original fits.'
+    assert trace['used_safety_margin'] is True
+
+
+def test_body_fit_tightens_word_target_after_failed_revision(monkeypatch):
+    monkeypatch.setattr(tts, 'estimate_statement_seconds', lambda text, cfg: 100)
+    rewrite = Mock(return_value='One two three four five six seven eight nine ten.')
+    monkeypatch.setattr(tts, '_revise_to_n_words', rewrite)
+    with pytest.raises(RuntimeError, match='remaining=50.00s'):
+        tts.fit_body_to_budget('One two three four five six seven eight nine ten.', 50, config=OutputConfig())
+    targets = [call.args[2] for call in rewrite.call_args_list]
+    assert targets[0] > targets[1] > targets[2]
+
+
+@pytest.mark.parametrize('counts, succeeds', [
+    ([259, 152, 116, 98, 65], True),
+    ([259, 152, 116, 98, 98], False),
+    ([259, 230, 205, 180, 155, 130, 105], False),
+])
+def test_body_fit_extends_only_productive_revisions(monkeypatch, counts, succeeds):
+    drafts = [' '.join(['argument'] * count) for count in counts]
+    monkeypatch.setattr(tts, 'estimate_statement_seconds',
+                        lambda text, cfg: len(text.split()) * 48.83 / 98)
+    rewrite = Mock(side_effect=drafts[1:])
+    monkeypatch.setattr(tts, '_revise_to_n_words', rewrite)
+    if succeeds:
+        text, trace = tts.fit_body_to_budget(drafts[0], 41.87, config=OutputConfig())
+        assert text == drafts[-1]
+        assert trace['attempts'][-1]['estimated_seconds'] <= trace['target_seconds']
+    else:
+        with pytest.raises(RuntimeError, match='could not be shortened'):
+            tts.fit_body_to_budget(drafts[0], 41.87, config=OutputConfig())
+    assert rewrite.call_count == len(counts) - 1
+    assert all(call.kwargs['source_text'] == drafts[0] for call in rewrite.call_args_list)

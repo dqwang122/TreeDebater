@@ -325,7 +325,7 @@ def test_observe_schedules_preparation_for_next_stage_without_changing_listener_
     p.observe_opponent('New point.', 'for', 'opening')
     prep = p._listening_prefix
     deadline = time.monotonic() + 3
-    while not prep.events and time.monotonic() < deadline:
+    while not any(e.get('status') == 'reviewed' for e in prep.events) and time.monotonic() < deadline:
         time.sleep(.005)
     prep.close()
     assert any(e['status'] == 'reviewed' for e in prep.events)
@@ -472,3 +472,24 @@ def test_metadata_only_speech_repairs_only_missing_prose(tmp_path):
     assert result['body_preparation']['draft'] == TAIL
     assert not result['audits'][0]['accepted']
     assert sum(x.startswith('LISTENING PREFIX REPAIR:') for x in calls) == 1
+
+
+def test_strict_budget_fits_complete_body_before_publishing_it(audio, tmp_path, monkeypatch):
+    import tts_streaming
+    p, history, _ = prepared_player(tmp_path)
+    p.streaming_output_config.enforce_duration_budget = True
+    fitted = 'Funding remains unresolved.'
+    fit = Mock(return_value=(fitted, {'checked': True}))
+    monkeypatch.setattr(tts_streaming, 'fit_body_to_budget', fit)
+    seen = []
+    def published(index, path, text, seconds):
+        if index:
+            assert fit.call_count == 1
+            assert text == fitted
+        seen.append(text)
+    p.tts_chunk_callback = published
+    offer_and_wait(p, history)
+    p.rebuttal_generation(history, 30, time_control=True)
+    assert seen == [PREFIX, fitted]
+    assert fit.call_args.args[1] < 30
+    assert trace(tmp_path)['body_duration_fit'] == {'checked': True}

@@ -89,6 +89,8 @@ class OutputConfig(Validated):
     # Publish from complete ASR plus a fixed task; merge analysis state afterward.
     listening_body_snapshot_delivery: bool = True
     listening_planning_timeout_seconds: float = 0.0
+    # Reject oversized audio before publication; tolerance applies once to the total budget.
+    enforce_duration_budget: bool = False
     budget_mode: str = 'experiment_elapsed'
     tts_backend: str = 'openai'
     model: str = 'tts-1'

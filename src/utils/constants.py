@@ -48,7 +48,7 @@ deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY", "")  # Get the DeepSeek AP
 
 WORD_BUDGET_FOR_DRAFT = 500
 LENGTH_MODE_FOR_DRAFT = "phonemes"  # Shared draft measurement: phonemes/words/syllables
-TIME_MODE_FOR_STATEMENT = "fastspeech"  # Match baseline in experiments/stage_summary.md; time/fastspeech/openai
+TIME_MODE_FOR_STATEMENT = os.environ.get("DEBATE_DURATION_ESTIMATOR", "fastspeech")
 TIME_TOLERANCE = 15  # seconds
 
 from streaming.config import SpeechBudgets
