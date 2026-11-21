@@ -84,7 +84,7 @@ def test_explicit_conflict_is_rejected_without_format_retry(recorded, kind):
     helper = Mock(return_value=[json.dumps(result)])
     checked = review(candidate, data, helper, endpoint=True)
     assert checked['review_format_valid'] and not checked['accepted']
-    assert helper.call_count == 1
+    assert helper.call_count == (2 if kind == 'stance' else 1)
 
 
 @pytest.mark.parametrize('fault', ['vague', 'wrong_draft_quote', 'wrong_source_quote', 'not_boolean',
@@ -137,15 +137,22 @@ def test_early_readiness_stage_is_part_of_review_payload(recorded):
     assert 'before the final audio batch is transcribed' in prompt
 
 
-def test_review_still_obeys_shared_call_budget(recorded):
+def test_review_format_retry_ignores_legacy_call_cap_but_stops_after_freeze(recorded):
     from streaming.config import OutputConfig
     from streaming.listening_prefix import PrefixPreparation, PreparationStopped
     candidate, data = inputs(recorded[1])
     helper = Mock(return_value=['{}'])
     prep = PrefixPreparation(1, helper, OutputConfig(listening_prefix_max_calls=1))
-    with pytest.raises(PreparationStopped):
-        review(candidate, data, prep._complete, endpoint=True)
-    assert helper.call_count == prep._calls == 1
+    try:
+        result = review(candidate, data, prep._complete, endpoint=True)
+        assert not result['review_format_valid']
+        assert helper.call_count == prep._calls == 2
+        prep.freeze()
+        with pytest.raises(PreparationStopped):
+            review(candidate, data, prep._complete, endpoint=True)
+        assert helper.call_count == 2
+    finally:
+        prep.close()
 
 
 def test_v37_advocacy_uses_identical_decision_contract_before_and_after_endpoint():
@@ -204,7 +211,12 @@ def test_concrete_defects_remain_blocking_at_both_stages(recorded, endpoint, bas
     helper = Mock(return_value=[json.dumps(response)])
     result = review(candidate, data, helper, endpoint=endpoint)
     assert result['review_format_valid'] and not result['accepted']
-    assert result['conflicts'] == response['conflicts'] and helper.call_count == 1
+    assert helper.call_count == (2 if kind == 'stance' else 1)
+    if kind == 'stance':
+        assert result['conflicts'][0]['origin'] == 'local_assessment_check'
+        assert result['conflicts'][0]['basis'] == 'stance_mismatch'
+    else:
+        assert result['conflicts'] == response['conflicts']
 
 
 @pytest.mark.parametrize('fault', ['missing_source', 'wrong_basis'])
@@ -221,3 +233,34 @@ def test_latest_input_rejection_needs_grounded_premise_conflict(recorded, fault)
     result = review(candidate, data, helper, endpoint=True)
     assert not result['review_format_valid'] and not result['accepted']
     assert helper.call_count == 2
+
+@pytest.mark.parametrize('rechecked,accepted', [('for', True), ('against', False), ('unclear', False)])
+def test_stance_mismatch_is_rechecked_without_assigned_role(recorded, rechecked, accepted):
+    candidate, data = inputs(recorded[1])
+    data['our_side'] = 'for'
+    candidate['framework'] = None
+    first = passing(candidate['text'], 'against')
+    def helper(*, prompt, **kwargs):
+        if prompt.startswith('STANCE ORIENTATION CHECK:'):
+            payload = unpack(prompt)
+            assert set(payload) == {'motion', 'draft'}
+            return [json.dumps(dict(expressed_side=rechecked, quote=candidate['text'], reason='Assessed relative to motion.'))]
+        return [json.dumps(first)]
+    result = review(candidate, data, helper)
+    assert result['accepted'] is accepted
+
+
+def test_stance_recheck_cannot_clear_other_publication_defects(recorded):
+    candidate, data = inputs(recorded[1])
+    data['our_side'] = 'for'
+    candidate['framework'] = None
+    first = passing(candidate['text'], 'against')
+    first['ready_to_speak_ok'] = False
+    first['conflicts'] = [dict(kind='ready_to_speak', basis='fabricated_evidence',
+        draft_quote=candidate['text'], source_quote='', reason='Invented evidence.')]
+    responses = [json.dumps(first), json.dumps(dict(expressed_side='for',
+        quote=candidate['text'], reason='Supports the motion.'))]
+    result = review(candidate, data, Mock(side_effect=lambda **kwargs: [responses.pop(0)]))
+    assert result['checks']['stance'] is True
+    assert result['checks']['ready_to_speak'] is False
+    assert not result['accepted']

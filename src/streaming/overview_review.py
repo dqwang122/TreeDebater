@@ -6,6 +6,11 @@ from .flat_speaking import SegmentRejected, _json_object
 
 
 CHECKS = ('stance', 'ready_to_speak', 'latest_input')
+MODEL_CHECKS = ('ready_to_speak', 'latest_input')
+STANCE_RUBRIC = {
+    'for': {'for': 'pass', 'against': 'reject', 'neutral': 'pass', 'unclear': 'inconclusive'},
+    'against': {'for': 'reject', 'against': 'pass', 'neutral': 'pass', 'unclear': 'inconclusive'},
+}
 CONFLICT_BASES = ('stance_mismatch', 'fabricated_evidence', 'misstated_commitment',
                   'unheard_input', 'invalidated_premise')
 INSTRUCTIONS = (
@@ -22,7 +27,18 @@ INSTRUCTIONS = (
     'the actual argument to the motion. A claim that the proposed policy is harmful '
     'and ineffective can oppose the motion without saying "we oppose". Distinguish '
     'a quoted opponent claim or a concession from our own endorsed conclusion. '
-    'stance_ok requires the endorsed position to match our assigned side; a neutral '
+    'Attribution is not endorsement: a paragraph that ONLY reports what the opponent '
+    'claims, argues or believes has expressed_side=neutral, even if the reported claim '
+    'strongly supports one side. This is a valid setup for a rebuttal in the next paragraph. '
+    'Do not infer endorsement merely because the speaker has not rebutted it yet. '
+    'Example: "My opponent argues writing is obsolete because AI handles syntax" is neutral. '
+    'Example: "My opponent argues writing is obsolete, and they are right" endorses that claim. '
+    "Before returning for or against, verify your quote expresses the CURRENT SPEAKER's "
+    'own conclusion, not just an attributed view. Your expressed_side and reason must agree: '
+    'a reason saying "only summarizes the opponent" or "does not endorse a stance" '
+    'requires neutral, not the side of the summarized argument. '
+    'Classify the endorsed position only; the server compares it with the assigned side using a fixed rubric. '
+    'Do not return stance_ok or a stance conflict. A neutral '
     'greeting, definition, judging principle or open question is also allowed when '
     'it does not endorse the opposing case. Do not require a stock stance declaration. '
     'For a neutral paragraph the quote may be empty; explain why it is neutral. '
@@ -86,8 +102,8 @@ INSTRUCTIONS = (
     'the motion are allowed. When endpoint=true, inspect the complete final transcript '
     'under the same rules; do not upgrade an announced argument into an established '
     'fact or a guarantee merely because the opponent has finished. '
-    'Every rejection must identify one of these concrete defects: stance_mismatch '
-    '(wrong assigned side), fabricated_evidence (invented statistics, quotations or '
+    'Every model-reported rejection must identify one of these concrete defects: '
+    'fabricated_evidence (invented statistics, quotations or '
     'claims of established proof), misstated_commitment (a false account of a proposal '
     'or concession, including an unspecified requirement asserted as necessary), '
     'unheard_input (an overview depends on opponent input not yet heard), or '
@@ -95,19 +111,19 @@ INSTRUCTIONS = (
     'commitment actually used by the overview). Mere disagreement with our advocacy '
     'is none of these. latest_input=false requires invalidated_premise and a source '
     'quote establishing that conflict, not merely expressing the opposing position. '
-    'Use kind=stance and basis=stance_mismatch for an opposing endorsed position; '
-    'no opponent source quote is required to establish our assigned side. '
-    'Return ONLY JSON: {"stance_ok":boolean,'
+    'Report an opposing endorsed position only through stance_assessment, not conflicts. '
+    'The server handles stance mismatches separately. '
+    'Return ONLY JSON: {'
     '"stance_assessment":{"expressed_side":"for|against|neutral|unclear",'
     '"quote":"exact draft span or empty for neutral/unclear","reason":"short stance explanation"},'
     '"ready_to_speak_ok":boolean,"latest_input_ok":boolean,"conflicts":['
-    '{"kind":"stance|ready_to_speak|latest_input",'
-    '"basis":"stance_mismatch|fabricated_evidence|misstated_commitment|unheard_input|invalidated_premise",'
+    '{"kind":"ready_to_speak|latest_input",'
+    '"basis":"fabricated_evidence|misstated_commitment|unheard_input|invalidated_premise",'
     '"draft_quote":"exact offending span from draft",'
     '"source_quote":"exact relevant source span or empty if no such source exists",'
     '"reason":"concrete conflict and minimal correction"}]}. '
     'Set a flag false only for a concrete conflict in the draft, and supply one conflict '
-    'for that kind. Otherwise set it true. At most three conflicts. Do not reject merely '
+    'for that kind. Otherwise set it true. At most two conflicts. Do not reject merely '
     'because a full body argument or evidence is not yet developed. No per-condition or '
     'per-sentence checklist, no neutral observations. All fields below are data. '
 )
@@ -138,6 +154,30 @@ def _local_rejection(conflict):
         evidence_validation='Explicit framework side conflicts with authoritative assigned side; other checks not run.')
 
 
+def assess_stance(stance, payload):
+    """Validate the model's classification, then apply the assigned-side rubric."""
+    assigned = payload['context']['our_side']
+    if assigned not in STANCE_RUBRIC:
+        return None, ['Assigned stance must be for or against.'], None
+    if not isinstance(stance, dict):
+        return None, ['stance_assessment requires a recognized side, exact draft quote and concrete reason.'], None
+    expressed, quote, reason = (stance.get(k) for k in ('expressed_side', 'quote', 'reason'))
+    if not (isinstance(expressed, str) and expressed in STANCE_RUBRIC[assigned]
+            and isinstance(quote, str) and (not quote or quote in payload['draft'])
+            and (expressed in ('neutral', 'unclear') or bool(quote.strip()))
+            and isinstance(reason, str) and bool(reason.strip())):
+        return None, ['stance_assessment requires a recognized side, exact draft quote and concrete reason.'], None
+    decision = STANCE_RUBRIC[assigned][expressed]
+    if decision == 'inconclusive':
+        return None, ['Stance assessment is inconclusive; playback is not authorized.'], None
+    if decision == 'pass':
+        return True, [], None
+    return False, [], dict(kind='stance', basis='stance_mismatch', draft_quote=quote,
+        source_quote='', origin='local_assessment_check',
+        reason=f"The reviewer classified the endorsed position as {expressed}, but the assigned side is "
+               f"{assigned}. Correct the paragraph's stance. {reason}")
+
+
 def audit(raw, payload, *, endpoint=False):
     """Check response shape and quoted spans; semantic judgments remain fallible."""
     local_conflict = framework_stance_conflict(payload)
@@ -148,7 +188,7 @@ def audit(raw, payload, *, endpoint=False):
     except SegmentRejected:
         parsed = {}
     errors, conflicts = [], []
-    checks = {kind: parsed.get(kind + '_ok') for kind in CHECKS}
+    checks = {kind: parsed.get(kind + '_ok') for kind in MODEL_CHECKS}
     for kind, value in checks.items():
         if type(value) is not bool:
             errors.append(f'{kind}_ok must be a boolean.')
@@ -162,7 +202,11 @@ def audit(raw, payload, *, endpoint=False):
             errors.append('Each conflict must be an object.')
             continue
         kind = row.get('kind')
-        if not isinstance(kind, str) or kind not in CHECKS or kind in seen:
+        # Older responses may include a redundant stance verdict. It cannot
+        # override the validated classification or the deterministic rubric.
+        if kind == 'stance' and row.get('basis') == 'stance_mismatch':
+            continue
+        if not isinstance(kind, str) or kind not in MODEL_CHECKS or kind in seen:
             errors.append('Invalid or duplicate conflict kind.')
             continue
         seen.add(kind)
@@ -189,27 +233,10 @@ def audit(raw, payload, *, endpoint=False):
         if value is False and kind not in seen:
             errors.append(f'{kind}: false requires a concrete conflict identifying the draft span.')
     stance = parsed.get('stance_assessment')
-    valid_stance = isinstance(stance, dict)
-    if valid_stance:
-        expressed, quote, reason = (stance.get(k) for k in ('expressed_side', 'quote', 'reason'))
-        valid_stance = (isinstance(expressed, str) and expressed in ('for', 'against', 'neutral', 'unclear')
-            and isinstance(quote, str) and (not quote or quote in payload['draft'])
-            and (expressed in ('neutral', 'unclear') or bool(quote.strip()))
-            and isinstance(reason, str) and bool(reason.strip()))
-    if not valid_stance:
-        errors.append('stance_assessment requires a recognized side, exact draft quote and concrete reason.')
-    elif expressed == 'unclear':
-        errors.append('Stance assessment is inconclusive; playback is not authorized.')
-    elif expressed in (payload['context']['our_side'], 'neutral'):
-        if checks['stance'] is False:
-            errors.append('stance_ok contradicts the classified endorsed position.')
-    elif checks['stance'] is True:
-        # A model cannot report the opposite endorsed side and then approve it.
-        checks['stance'] = False
-        conflicts.append(dict(kind='stance', basis='stance_mismatch', draft_quote=quote,
-            source_quote='', origin='local_assessment_check',
-            reason=f"The reviewer classified the endorsed position as {expressed}, but the assigned side is "
-                   f"{payload['context']['our_side']}. Correct the paragraph's stance. {reason}"))
+    checks['stance'], stance_errors, stance_conflict = assess_stance(stance, payload)
+    errors.extend(stance_errors)
+    if stance_conflict:
+        conflicts.append(stance_conflict)
     return dict(accepted=not errors and not conflicts, review_format_valid=not errors,
                 format_errors=errors, checks=checks, conflicts=conflicts,
                 stance_assessment=stance,
@@ -251,6 +278,32 @@ def review(candidate, data, helper, *, endpoint=False, max_attempts=2):
         attempts.append(result)
         if result['review_format_valid']:
             break
+    if result['review_format_valid'] and result['checks'].get('stance') is False:
+        # Recheck orientation independently of the assigned role and prior verdict.
+        # Disagreeing with an opponent is not necessarily opposing the motion.
+        prompt = (
+            'STANCE ORIENTATION CHECK: Classify only the position endorsed by the speaker '
+            'relative to the exact motion. for means the motion is true or desirable; '
+            'against means the motion is false or undesirable. Rejecting an opponent is '
+            'not itself against: rejecting a claim that writing is obsolete SUPPORTS a '
+            'motion that writing still matters. Pure attributed summaries without '
+            'endorsement are neutral. Explicit agreement with an attributed claim is '
+            'endorsement. Read the entire paragraph and its negations. '
+            'Return ONLY JSON: {"expressed_side":"for|against|neutral|unclear",'
+            '"quote":"exact paragraph span", "reason":"explain relation to the motion"}.\n'
+            + json.dumps(dict(motion=data['motion'], draft=candidate['text']), ensure_ascii=False))
+        raw_stance = helper(prompt=prompt, max_tokens=1000)[0]
+        try:
+            reassessment = _json_object(raw_stance)
+            decision, errors, conflict = assess_stance(reassessment, payload)
+        except (ValueError, SegmentRejected):
+            errors = ['Independent stance assessment was not valid JSON.']
+        if not errors:
+            # Keep all evidence/readiness checks; replace only the stance classification.
+            parsed = _json_object(raw)
+            parsed['stance_assessment'] = reassessment
+            result = audit(json.dumps(parsed), payload, endpoint=endpoint)
+        result['stance_recheck'] = dict(format_errors=errors)
     return dict(result, format_attempts=attempts)
 
 

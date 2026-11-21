@@ -76,8 +76,9 @@ def test_matching_framework_does_not_replace_review_of_actual_spoken_stance():
     helper = Mock(return_value=[json.dumps(response)])
     result = review(candidate, data, helper)
     assert result['review_format_valid'] and not result['accepted']
-    assert helper.call_count == 1
-    prompt = helper.call_args.kwargs['prompt']
+    assert helper.call_count == 2  # Includes the independent orientation recheck.
+    prompt = helper.call_args_list[0].kwargs['prompt']
+    assert helper.call_args.kwargs['prompt'].startswith('STANCE ORIENTATION CHECK:')
     assert 'Check the actual spoken text even when the framework position matches' in prompt
     assert review_payload(candidate, data)['context']['our_position'] == 'support the motion'
 
@@ -90,11 +91,11 @@ def test_opposite_assessment_cannot_be_overridden_by_true_stance_flag():
     assert checked['review_format_valid'] and not checked['accepted']
     assert checked['checks']['stance'] is False
     assert checked['conflicts'][0]['origin'] == 'local_assessment_check'
-    assert helper.call_count == 1
+    assert helper.call_count == 2  # Includes the independent orientation recheck.
 
 
-@pytest.mark.parametrize('fault', ['old_schema', 'missing_assessment', 'missing_stance', 'fake_quote',
-    'empty_quote', 'no_reason', 'unclear', 'unknown_side', 'string_bool', 'contradictory_rejection'])
+@pytest.mark.parametrize('fault', ['old_schema', 'missing_assessment', 'fake_quote',
+    'empty_quote', 'no_reason', 'unclear', 'unknown_side'])
 def test_incomplete_or_inconsistent_stance_review_is_never_accepted(fault):
     candidate, data = inputs()
     candidate['framework']['position'] = 'for'
@@ -103,8 +104,6 @@ def test_incomplete_or_inconsistent_stance_review_is_never_accepted(fault):
         result = copy.deepcopy(RECORDED['original_review'])
     elif fault == 'missing_assessment':
         result.pop('stance_assessment')
-    elif fault == 'missing_stance':
-        result.pop('stance_ok')
     elif fault == 'fake_quote':
         result['stance_assessment']['quote'] = 'Not in the speech.'
     elif fault == 'empty_quote':
@@ -113,13 +112,56 @@ def test_incomplete_or_inconsistent_stance_review_is_never_accepted(fault):
         result['stance_assessment']['reason'] = ''
     elif fault in ('unclear', 'unknown_side'):
         result['stance_assessment']['expressed_side'] = 'unclear' if fault == 'unclear' else 'both'
-    elif fault == 'string_bool':
-        result['stance_ok'] = 'true'
-    else:
-        result['stance_ok'] = False
-        result['conflicts'] = [dict(kind='stance', basis='stance_mismatch', draft_quote=candidate['text'],
-            source_quote='', reason='Reject, despite classifying the speech as FOR.')]
     helper = Mock(return_value=[json.dumps(result)])
     checked = review(candidate, data, helper)
     assert not checked['accepted'] and not checked['review_format_valid']
     assert helper.call_count == 2  # Existing bounded format retry, not approval.
+
+
+@pytest.mark.parametrize('assigned', ['for', 'against'])
+@pytest.mark.parametrize('expressed', ['for', 'against', 'neutral', 'unclear'])
+def test_classification_is_compared_using_local_rubric(assigned, expressed):
+    candidate, data = inputs()
+    data['our_side'] = assigned
+    candidate['framework']['position'] = assigned
+    response = passing(candidate['text'], expressed)
+    response.pop('stance_ok')
+    result = audit(json.dumps(response), review_payload(candidate, data))
+    assert result['accepted'] == (expressed in (assigned, 'neutral'))
+    assert result['review_format_valid'] == (expressed != 'unclear')
+    if expressed not in (assigned, 'neutral', 'unclear'):
+        assert result['checks']['stance'] is False
+        assert result['conflicts'][0]['origin'] == 'local_assessment_check'
+
+
+@pytest.mark.parametrize('legacy_flag', [False, True, 'true', None])
+def test_matching_against_classification_overrides_contradictory_legacy_verdict(legacy_flag):
+    candidate, data = inputs()
+    data['our_side'] = 'against'
+    candidate['framework']['position'] = 'against'
+    candidate['text'] = ('In the age of artificial intelligence, the assertion that '
+                         'learning to be a good writer still matters is misguided.')
+    response = passing(candidate['text'], 'against')
+    response['stance_ok'] = legacy_flag
+    response['conflicts'] = [dict(kind='stance', basis='stance_mismatch',
+        draft_quote=candidate['text'], source_quote='',
+        reason='The draft is against, whereas the assigned position is oppose.')]
+    helper = Mock(return_value=[json.dumps(response)])
+    result = review(candidate, data, helper)
+    assert result['accepted'] and result['review_format_valid']
+    assert result['checks']['stance'] is True
+    assert result['conflicts'] == []
+    assert helper.call_count == 1
+
+
+def test_recorded_public_run_no_longer_rejects_against_as_inconsistent_with_against():
+    case = json.loads((Path(__file__).parent / 'fixtures/prefix_against_false_mismatch.json').read_text())
+    _, data = inputs()
+    data.update(our_side='against', stage='opening',
+                motion='Learning to be a good writer still matters in the age of AI')
+    payload = review_payload(case['candidate'], data)
+    for response in case['responses']:
+        result = audit(json.dumps(response), payload)
+        assert result['accepted'] and result['review_format_valid']
+        assert result['checks']['stance'] is True
+        assert result['conflicts'] == []

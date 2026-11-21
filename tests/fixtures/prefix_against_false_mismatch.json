@@ -1,0 +1,84 @@
+{
+  "description": "Recorded public speech run: AGAINST was classified correctly but redundantly rejected. Responses reconstructed from audited fields.",
+  "candidate": {
+    "framework": {
+      "ready": true,
+      "position": "against",
+      "core_dispute": "the necessity of traditional writing skills in the age of AI",
+      "response_axes": [],
+      "prefix_action": "keep",
+      "reason": "unchanged"
+    },
+    "body_plan": [
+      {
+        "axis": 0,
+        "target": null,
+        "issue": "issue",
+        "action": "answer_objection",
+        "point": "While writing skills are important, the reliance on AI does not diminish the need for effective communication and critical thinking skills.",
+        "weight": 2
+      }
+    ],
+    "text": "In the age of artificial intelligence, the assertion that learning to be a good writer still matters is misguided. AI tools are rapidly evolving, changing the way we communicate. They can create content quickly and efficiently, making traditional writing skills less relevant in many contexts. The emphasis on AI-generated writing raises a critical question: are we valuing the artistry and individuality that comes with human writing?",
+    "draft": "First, let's address my opponent's point about the importance of writing skills. While they argue that without these skills, people cannot rely on them, we must consider that AI can assist in organizing and presenting ideas effectively. Relying on AI doesn't mean we lack the ability to communicate; it means we are adapting to new tools that enhance our productivity. \n\nSecond, AI-generated content can facilitate communication across different languages and contexts, making information more accessible. The ability to write well may still be valuable, but AI expands our reach and allows us to focus on higher-level thinking and creativity. \n\nThird, while my opponent emphasizes the need for critical thinking, they overlook how AI can encourage us to think critically about the information we encounter. Instead of writing everything from scratch, we can analyze AI-generated content, questioning its validity and implications, which ultimately hones our analytical skills. \n\nIn conclusion, while writing skills have historically been significant, the rise of AI encourages us to redefine what it means to communicate effectively. We should embrace the advancements technology offers rather than cling to traditional writing methods that may no longer serve us in the same way."
+  },
+  "responses": [
+    {
+      "stance_ok": false,
+      "ready_to_speak_ok": true,
+      "latest_input_ok": true,
+      "stance_assessment": {
+        "expressed_side": "against",
+        "quote": "In the age of artificial intelligence, the assertion that learning to be a good writer still matters is misguided.",
+        "reason": "The paragraph explicitly states that the assertion of the importance of learning to write is misguided, which aligns with opposing the motion."
+      },
+      "conflicts": [
+        {
+          "kind": "stance",
+          "basis": "stance_mismatch",
+          "draft_quote": "In the age of artificial intelligence, the assertion that learning to be a good writer still matters is misguided.",
+          "source_quote": "Learning to write still matters in the age of artificial intelligence.",
+          "reason": "The draft endorses a position against the motion, while the assigned side is to oppose the motion, creating a mismatch."
+        }
+      ]
+    },
+    {
+      "stance_ok": false,
+      "ready_to_speak_ok": true,
+      "latest_input_ok": true,
+      "stance_assessment": {
+        "expressed_side": "against",
+        "quote": "In the age of artificial intelligence, the assertion that learning to be a good writer still matters is misguided.",
+        "reason": "The paragraph argues that the importance of learning to write is misguided due to the rise of AI tools, which suggests opposition to the motion."
+      },
+      "conflicts": [
+        {
+          "kind": "stance",
+          "basis": "stance_mismatch",
+          "draft_quote": "In the age of artificial intelligence, the assertion that learning to be a good writer still matters is misguided.",
+          "source_quote": "Learning to write still matters in the age of artificial intelligence. intelligence. Writing is how we organize our thoughts. examine evidence, and notice gaps in an argument. An AI can suggest sentences. but the writer must decide what is true and what deserves it. emphasis. Without writing skills, people cannot rely on them. reliable.",
+          "reason": "The draft endorses an opposing stance to the assigned position of opposing the motion."
+        }
+      ]
+    },
+    {
+      "stance_ok": false,
+      "ready_to_speak_ok": true,
+      "latest_input_ok": true,
+      "stance_assessment": {
+        "expressed_side": "against",
+        "quote": "In the age of artificial intelligence, the assertion that learning to be a good writer still matters is misguided.",
+        "reason": "The paragraph argues that the relevance of traditional writing skills is diminished due to the capabilities of AI, which aligns with opposing the motion."
+      },
+      "conflicts": [
+        {
+          "kind": "stance",
+          "basis": "stance_mismatch",
+          "draft_quote": "In the age of artificial intelligence, the assertion that learning to be a good writer still matters is misguided.",
+          "source_quote": "Learning to write still matters in the age of artificial intelligence. intelligence. Writing is how we organize our thoughts. examine evidence, and notice gaps in an argument. An AI can suggest sentences. but the writer must decide what is true and what deserves it. emphasis. Without writing skills, people cannot rely on them. reliable.",
+          "reason": "The draft endorses an opposing stance to the assigned position of 'against' the motion."
+        }
+      ]
+    }
+  ]
+}
