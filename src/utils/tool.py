@@ -126,8 +126,12 @@ def create_log(log_file=None):
         log.setLevel(logging.DEBUG)  # Set the logger level to DEBUG
 
         if log_file is None:
-            log_file = get_output_path()
-            print(f"Log file: {log_file}")
+            log_file = os.environ.get("DEBATE_LOG_FILE") or get_output_path()
+        global log_file_path
+        log_file_path = log_file
+        if not log_file:
+            raise ValueError("A debate log path is required")
+        print(f"Log file: {log_file}")
 
         # Lazy file handler for logging to a file with DEBUG level
         # File will only be created when first log record is written

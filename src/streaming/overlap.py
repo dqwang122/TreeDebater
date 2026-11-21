@@ -387,6 +387,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", type=str, required=True, help="YAML config (same layout as env.py).")
     p.add_argument("--watch-dir", type=str, default=None, help="Optional root for per-turn watch subdirs.")
     p.add_argument("--debug", action="store_true", default=False)
+    p.add_argument("--skip-evaluation", action="store_true", help="Compatibility flag; evaluation is always run separately.")
     add_streaming_arguments(p)
     return p.parse_args()
 
