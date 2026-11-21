@@ -86,8 +86,14 @@ def planning_material(targets, trees, opponent_side, *, topology):
     return result
 
 
+def listening_selection_only(material):
+    """Selection recovery applies only when an upcoming speech has an overview."""
+    return bool(material.get('listening_source_selection') and
+                material.get('overview_preparation') is not None)
+
+
 def branch_prompt(context, chunks, previous):
-    if context.get('listening_source_selection') and context.get('overview_preparation') is not None:
+    if listening_selection_only(context):
         return listening_selection_prompt(context, chunks, previous)
     readable = bool(context.get('clash_records') and context.get('overview_preparation') is not None)
     prompt=(
@@ -191,7 +197,7 @@ def parse_branch_state(raw, prefix, material):
     data=json.loads(raw.strip().removeprefix('```json').removesuffix('```').strip())
     if not isinstance(data, dict):
         raise ValueError('Expected indexed claims, limits and rebuttals')
-    selection_only = material.get('listening_source_selection') and material.get('overview_preparation') is not None
+    selection_only = listening_selection_only(material)
     if selection_only:
         if set(data) != {'claims', 'limits', 'overview'} or not isinstance(data['overview'], dict):
             raise ValueError('Listening selection must not generate speech arguments')

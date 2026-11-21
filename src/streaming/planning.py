@@ -135,7 +135,7 @@ class IncrementalPlanner:
         if self.config.early:
             material = context()
             if self.config.branch_state:
-                from .branch_planning import branch_prompt
+                from .branch_planning import branch_prompt, listening_selection_only
                 prompt = branch_prompt(material, self.chunks, self.state)
             else:
                 prompt = (
@@ -188,7 +188,7 @@ class IncrementalPlanner:
                         self.overview = self.state['overview']
                     self.plan = json.dumps(self.state, ensure_ascii=False)
                 except (ValueError, TypeError, KeyError) as exc:
-                    if material.get('listening_source_selection'):
+                    if listening_selection_only(material):
                         from .branch_planning import recover_listening_state
                         self.state = recover_listening_state(raw, " ".join(self.chunks), material, self.state)
                         self.overview = self.state['overview']

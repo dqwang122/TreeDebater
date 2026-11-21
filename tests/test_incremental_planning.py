@@ -180,3 +180,26 @@ def test_correction_id_tolerates_paraphrased_target_but_cannot_change_other_spea
 def test_retired_planning_mode_is_rejected(mode):
     with pytest.raises(ValueError, match="Unknown planning mode"):
         PlanningConfig(mode=mode)
+
+
+@pytest.mark.parametrize("mode", ["flat_tree", "branch_tree"])
+@pytest.mark.parametrize("raw", [
+    json.dumps(dict(claims=[], limits=[], rebuttals=[dict(
+        target=0, move="challenge_support", point="Unsupported claim", assumptions=[])])),
+    '{"claims":[],"limits":[],"overview":{}}',
+    '',
+])
+def test_final_closing_invalid_notes_do_not_abort_finalization(mode, raw):
+    p = planner(mode)
+    c = callbacks(Mock(return_value=raw))
+    material = c["context"]()
+    material.update(listening_source_selection=True, overview_preparation=None)
+    c["context"] = lambda: material
+    p.finalize("Final opponent closing speech.", reset_tree=Mock(), **c)
+    assert p.finished
+    assert p.processed == 1
+    assert p.state == {}
+    assert "Final opponent closing speech." in p.plan
+    assert any(e["action"] == "INVALID_STATE" for e in p.events)
+    assert not any(e["action"] == "RECOVERED_STATE" for e in p.events)
+    assert "LISTENING SOURCE SELECTION" not in c["llm"].call_args.args[0]
