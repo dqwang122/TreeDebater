@@ -130,11 +130,11 @@ def test_streamed_chunks_still_use_native_length_refinement(audio, tmp_path, mon
 
 def test_helper_stream_forwards_deltas_preserves_usage_and_closes(monkeypatch):
     from utils import model
-    from litellm import ModelResponse
+    from litellm.types.utils import ModelResponseStream
     events=[]
-    chunks=[ModelResponse(stream=True, model='gpt-test', choices=[dict(index=0,delta=dict(content=x),finish_reason=None)])
+    chunks=[ModelResponseStream( model='gpt-test', choices=[dict(index=0,delta=dict(content=x),finish_reason=None)])
             for x in ('First.\n\n','Last.')]
-    chunks.append(ModelResponse(stream=True,model='gpt-test',choices=[dict(index=0,delta={},finish_reason='stop')],
+    chunks.append(ModelResponseStream(model='gpt-test',choices=[dict(index=0,delta={},finish_reason='stop')],
                                 usage=dict(prompt_tokens=10,completion_tokens=4,total_tokens=14)))
     class ResponseStream:
         def __iter__(self):

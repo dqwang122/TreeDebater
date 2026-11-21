@@ -11,6 +11,7 @@ Key features vs the serial pipeline in tts.py:
 """
 
 from utils.proxy_models import is_proxy_model
+from utils.thinking_policy import THINKING
 
 import concurrent.futures
 import csv
@@ -162,6 +163,13 @@ def _text_request(client, model, messages, max_tokens, *, json_mode=False):
             options.update(reasoning_effort='low', service_tier='default')
     elif model == 'gpt-5-mini':
         options['reasoning_effort'] = 'minimal'
+    if ('claude' in model.lower() and not is_proxy_model(model)
+            and not os.environ.get('DEBATE_LLM_API_BASE')):
+        # Amazon Bedrock through the shared wrapper; litellm's response exposes
+        # the same choices[0].message.content surface as the OpenAI client.
+        from utils.model import bedrock_claude_completion, bedrock_claude_model
+        return bedrock_claude_completion(model=bedrock_claude_model(model), messages=messages,
+            max_tokens=max_tokens, **({'response_format': {'type': 'json_object'}} if json_mode else {}))
     if owned is None and client is None:
         owned = OpenAI()
     if json_mode:
@@ -1110,7 +1118,7 @@ def _run_pipeline(
         ctx.seconds_per_word = _measured_rate()
         _contexts.append(ctx)
         _chunk_contexts[target_idx] = ctx
-        th = threading.Thread(target=_refine_worker, args=(ctx, "prestart"), daemon=True)
+        th = threading.Thread(target=THINKING.bind(_refine_worker), args=(ctx, "prestart"), daemon=True)
         ctx.workers.append(th)
         th.start()
         triggers = []
@@ -1158,7 +1166,7 @@ def _run_pipeline(
         ctx.seconds_per_word = _measured_rate()
         _contexts.append(ctx)
         _chunk_contexts[last_idx] = ctx
-        th = threading.Thread(target=_refine_worker, args=(ctx, "prestart"), daemon=True)
+        th = threading.Thread(target=THINKING.bind(_refine_worker), args=(ctx, "prestart"), daemon=True)
         ctx.workers.append(th)
         th.start()
         logger.debug(
@@ -1340,7 +1348,7 @@ def _run_pipeline(
 
             # Always start a normal worker for this chunk (in addition to any
             # prestart worker that may already be running on the same context).
-            normal_th = threading.Thread(target=_refine_worker, args=(ctx, "normal"), daemon=True)
+            normal_th = threading.Thread(target=THINKING.bind(_refine_worker), args=(ctx, "normal"), daemon=True)
             ctx.workers.append(normal_th)
             normal_th.start()
 

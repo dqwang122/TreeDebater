@@ -42,7 +42,7 @@ def test_v46_actual_stance_reversal_cannot_publish_despite_matching_framework(au
     with pytest.raises(SegmentRejected, match='publication review'):
         p.rebuttal_generation(history, 60, time_control=True)
     assert len(reviewed) == 2
-    assert p.helper_client.call_count == 4  # Draft/review + one joint repair/review.
+    assert p.helper_client.call_count == 6  # Draft/review/orientation + one joint repair/review/orientation.
     audio[0].assert_not_called()
     p.tts_chunk_callback.assert_not_called()
     assert trace(tmp_path)['chunks'] == []

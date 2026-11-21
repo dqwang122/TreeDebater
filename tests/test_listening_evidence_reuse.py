@@ -11,6 +11,7 @@ import pytest
 
 from ouragents import TreeDebater
 from streaming.listening_prefix import material, prepare
+from utils.thinking_policy import THINKING
 from streaming.listening_prefix import PrefixFormatRejected
 from test_final_input_overlap import ready_handoff
 from test_full_speech import audio as audio
@@ -78,12 +79,17 @@ def test_recorded_truncated_closing_gets_only_one_repair_before_publication(tmp_
 
 @pytest.mark.parametrize('feedback', ['Explain the selected evidence.', 'No changes'])
 @pytest.mark.parametrize('parallel', [True, False])
-def test_prepared_evidence_reuse_and_revision_run_once_across_handoff(audio, tmp_path, monkeypatch, feedback, parallel):
+@pytest.mark.parametrize('cold_start', [True, False])
+def test_prepared_evidence_reuse_and_revision_run_once_across_handoff(audio, tmp_path, monkeypatch, feedback, parallel, cold_start):
     import tts_streaming
     # The body already fits the remaining 58 seconds: evidence alone must be
     # enough to trigger revision when the review reports no corrections.
     monkeypatch.setattr(tts_streaming, 'estimate_statement_seconds', lambda *a, **kw: 58)
     p, history, _ = prepared_player(tmp_path)
+    if cold_start:
+        p.status = 'opening'
+        p.planner.chunks = []
+        history = []
     _, handoff = ready_handoff(p, history, audio[1])
     handoff['candidate']['body_preparation'] = dict(draft=TAIL, feedback=None,
         prefix_text=PREFIX, stage=p.status, turn=p.planner.turn)
@@ -92,8 +98,8 @@ def test_prepared_evidence_reuse_and_revision_run_once_across_handoff(audio, tmp
     p._get_revision_suggestion = MethodType(TreeDebater._get_revision_suggestion, p)
     p._length_adjust = MethodType(TreeDebater._length_adjust, p)
     p.high_quality_evidence_pool = [dict(id=f'e{i}', content=f'EVIDENCE_{i}', raw_content='RAW') for i in range(12)]
-    # The cold-start reuse path retains initial sources, filtering already-used
-    # IDs and documents that no longer match the current candidate pool.
+    # A rebuttal with existing history is not a cold start, even without a cache.
+    # Reuse eligible initial evidence without an extra endpoint selector.
     p.evidence_pool = [p.high_quality_evidence_pool[0], p.high_quality_evidence_pool[2],
                        dict(p.high_quality_evidence_pool[3], content='OBSOLETE_CONTENT')]
     p.used_evidence = {'e0'}
@@ -110,10 +116,12 @@ def test_prepared_evidence_reuse_and_revision_run_once_across_handoff(audio, tmp
             assert first.wait(3)
             return [feedback]
         if prompt.startswith('From the provided list of evidence dictionaries'):
+            assert THINKING.critical
             assert 'EVIDENCE_0"' not in prompt and 'RAW' not in prompt
             selections.append(prompt)
             return [json.dumps(dict(selected_ids=['e2']))]
         if kwargs.get('json_mode') is False:
+            assert THINKING.critical
             assert 'EVIDENCE_2' in prompt and 'RAW' not in prompt
             assert kwargs['temperature'] == .37 and kwargs['max_tokens'] == 2048
             revisions.append(prompt)
@@ -127,14 +135,15 @@ def test_prepared_evidence_reuse_and_revision_run_once_across_handoff(audio, tmp
             assert revised.wait(3), 'Evidence selection/revision waited for final tree analysis'
         assert p.used_evidence == {'e0'}, 'Speculation mutated committed evidence use'
         return copy.deepcopy(history)
-    result = p.rebuttal_generation(history, 60, time_control=True, listening_handoff=handoff,
+    generate = p.opening_generation if cold_start else p.rebuttal_generation
+    result = generate(history, 60, time_control=True, listening_handoff=handoff,
         listening_input_completion=complete, listening_recognized_input=lambda: copy.deepcopy(history))
     assert result == PREFIX + '\n\n' + revised_tail
-    assert not selections
+    assert len(selections) == int(cold_start)
     assert len(revisions) == 1
     assert p.used_evidence == {'e0', 'e2'}
     saved = trace(tmp_path)
-    assert saved['prepared_evidence']['mode'] == 'reuse_only'
+    assert saved['prepared_evidence']['mode'] == ('native_cold_start' if cold_start else 'reuse_only')
     assert saved['prepared_evidence']['selected_ids'] == ['e2']
     if parallel:
         assert saved['parallel_body_revision']['reused']

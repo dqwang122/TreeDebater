@@ -35,7 +35,7 @@ def speaker():
     other = propose(pair, 'School visits require an appointment.',
                     [condition('School visits require an appointment.')])
     p = player(pair, 'flat_tree')
-    p.config = SimpleNamespace(model='test-model', streaming_tts=True, single_pass_revision=True, type='treedebater')
+    p.config = SimpleNamespace(model='gpt-test', streaming_tts=True, single_pass_revision=True, type='treedebater')
     p.streaming_output_config = OutputConfig(speech_mode='incremental')
     p.simulated_audience = [SimpleNamespace(feedback=Mock(side_effect=reviewed))]
     p.helper_client = Mock(return_value=['With costings first, how will the free trial be assessed?'])

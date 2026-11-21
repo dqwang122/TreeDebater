@@ -298,6 +298,25 @@ Start a new DeepDebater state directory after changing this role policy so
 results generated with the previous internal-review model cannot be reused.
 
 
+### Cold-start evidence and Claude delivery
+
+The first opening now defaults to `listening_cold_start_evidence: draft_free`:
+its draft receives no supplied evidence, and revision selects native evidence
+from the full eligible pool. `claim_keyed`, `native`, and `initial_pool` retain
+alternative policies. Existing debate history or heard speech prevents the
+cold-start fallback; a missing preparation cache alone does not enable it.
+`DEBATE_VOICED_QUALIFICATIONS=1` restores the previous evidence-prompt wording.
+
+Direct Claude models without a configured proxy use the Bedrock wrapper;
+known proxy aliases retain their existing route. `DEBATE_BEDROCK_CLAUDE_PROFILE`
+can select the inference profile. Explicit `max_tokens` limits are preserved;
+request a larger limit explicitly when a task needs additional thinking tokens.
+`listening_speaking_thinking: off` applies to the current delivery and its owned
+feedback/revision workers, not concurrent opponent preparation. `model_default`
+leaves that call chain's model policy unchanged; `DEBATE_CLAUDE_THINKING=off`
+remains an explicit global override.
+
+
 ## 📚 Citation
 
 If you find this project helpful, please consider citing the following work:

@@ -9,6 +9,7 @@ completed preparation with all input, keeping the published first paragraph immu
 """
 import copy
 from concurrent.futures import Future, ThreadPoolExecutor
+from utils.thinking_policy import THINKING
 from dataclasses import replace
 import hashlib
 from io import BytesIO
@@ -59,6 +60,36 @@ def next_stage(side, stage, first_side='for'):
     return stages[index] if index < len(stages) else None
 
 
+def is_cold_start(data):
+    return (data['stage'] == 'opening' and not data['heard_transcript']
+            and not data['debate_history'])
+
+
+def cold_start_draft_evidence(player, stage, policy):
+    """Evidence shown to a cold-start draft (nothing heard yet, e.g. the first opening).
+
+    draft_free: no evidence, as in the non-streaming TreeDebater opening draft; the
+    handoff revision then selects from the full pool keyed on the draft.
+    claim_keyed: one native selection over the full pool keyed on our definition and
+    main claims; cached on the player and installed as evidence_pool so every
+    consumer of the initial pool sees the same relevant sources.
+    """
+    if policy == 'draft_free':
+        return []
+    cached = getattr(player, '_cold_start_claim_evidence', None)
+    if cached is None:
+        statement = ('Definition: ' + str(getattr(player, 'definition', '') or '') + '\nMain claims:\n- '
+                     + '\n- '.join(getattr(player, 'main_claims_content', []) or []))
+        candidates = [e for e in player.high_quality_evidence_pool if e['id'] not in player.used_evidence]
+        selected = player._select_revision_evidence(statement,
+            'Select sources that establish or illustrate these claims for an opening speech.',
+            candidates, stage=stage)
+        cached = list(selected)
+        player._cold_start_claim_evidence = cached
+        player.evidence_pool = copy.deepcopy(cached)
+    return supplied_evidence(player)
+
+
 def material(player, stage, history=None, *, include_rehearsal=True):
     context = player._planning_context()
     conditions = current_checklist(player)
@@ -85,6 +116,9 @@ def material(player, stage, history=None, *, include_rehearsal=True):
         supplied_evidence=supplied_evidence(player), final_transcript=transcript,
         feedback_context=player._feedback_context(stage),
         heard_transcript=' '.join(player.planner.chunks), turn=player.planner.turn)
+    policy = getattr(getattr(player, 'streaming_output_config', None), 'listening_cold_start_evidence', 'native')
+    if policy in ('draft_free', 'claim_keyed') and is_cold_start(data):
+        data['supplied_evidence'] = cold_start_draft_evidence(player, stage, policy)
     if player.planner.config.linear:
         from .linear_listening import source_targets
         data['current_targets'] = source_targets(data['debate_history'], player.side,
@@ -863,6 +897,14 @@ class PrefixPreparation:
 
 def speak_with_listening_prefix(player, max_time, history, config, kwargs, *, start=None,
                                 stage=None, handoff=None, complete_input=None, recognized_input=None):
+    """Deliver a listening-prefix speech; the speaking phase runs latency-critical."""
+    with THINKING.latency_critical(getattr(config, 'listening_speaking_thinking', 'off') == 'off'):
+        return _speak_with_listening_prefix(player, max_time, history, config, kwargs, start=start,
+            stage=stage, handoff=handoff, complete_input=complete_input, recognized_input=recognized_input)
+
+
+def _speak_with_listening_prefix(player, max_time, history, config, kwargs, *, start=None,
+                                 stage=None, handoff=None, complete_input=None, recognized_input=None):
     from agents import Debater
     from pydub import AudioSegment
     import tts_streaming
@@ -1065,8 +1107,21 @@ def speak_with_listening_prefix(player, max_time, history, config, kwargs, *, st
 
         def cached_selection(statement, guidance, candidates, *, stage, call_id=None):
             from utils.evidence_material import EvidenceSelection
-            # Reuse only unchanged, still-eligible sources. No final-input
-            # selector fallback, including cold starts and changed pools.
+            if (evidence_cache is None and is_cold_start(frozen_data)
+                    and config.listening_cold_start_evidence != 'initial_pool'):
+                # Cold start: nothing was heard, so listening-time selection never
+                # ran. Select from the full candidate pool keyed on the draft, the
+                # same native selector TreeDebater uses, instead of reusing the
+                # number-ranked initial pool.
+                selected = player._select_revision_evidence(statement, guidance, candidates,
+                    stage=stage, **({'call_id': call_id} if call_id is not None else {}))
+                trace['prepared_evidence'] = dict(
+                    mode='native_cold_start', endpoint_supplement_enabled=False,
+                    source='native_selector', calls=1, events=[],
+                    selected_ids=[e['id'] for e in selected])
+                return selected
+            # Reuse only unchanged, still-eligible listening sources. No final-input
+            # selector fallback for changed pools.
             available = {e['id']: e for e in candidates} if stage != 'closing' else {}
             prepared = evidence_cache.selected if evidence_cache is not None else initial_evidence
             selected = EvidenceSelection(
@@ -1383,7 +1438,7 @@ def speak_with_listening_prefix(player, max_time, history, config, kwargs, *, st
 
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix='listening-tail') as executor:
             if (config.listening_parallel_body_feedback or config.listening_parallel_endpoint_revision) and handoff and body_preparation and recognized_input:
-                feedback_future = executor.submit(early_feedback)
+                feedback_future = executor.submit(THINKING.bind(early_feedback))
             def run_tail():
                 try:
                     result = tail_work()
@@ -1406,7 +1461,7 @@ def speak_with_listening_prefix(player, max_time, history, config, kwargs, *, st
                     if selected_stream is not None:
                         selected_stream.fail(exc)
                     raise
-            future = executor.submit(run_tail)
+            future = executor.submit(THINKING.bind(run_tail))
             def supply_tail():
                 if stream_body:
                     return tail_ready.result()
