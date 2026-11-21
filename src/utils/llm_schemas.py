@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SchemaBase(BaseModel):
@@ -121,6 +121,18 @@ class SelectionFramework(SchemaBase):
 
 class SelectionFrameworkResponse(SchemaBase):
     selection: SelectionFramework
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_flat_selection(cls, value):
+        """Accept equivalent list selections with framework fields at the root."""
+        if isinstance(value, dict) and isinstance(value.get("selection"), list):
+            selection = {"claims": value["selection"]}
+            for name in ("framework", "explanation"):
+                if name in value:
+                    selection[name] = value[name]
+            return {**value, "selection": selection}
+        return value
 
 
 class ActionItem(SchemaBase):

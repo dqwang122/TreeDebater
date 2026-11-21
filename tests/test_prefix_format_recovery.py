@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from streaming.flat_speaking import SegmentRejected
-from streaming.listening_prefix import PrefixFormatRejected, PrefixPreparation, material, prepare
+from streaming.listening_prefix import PreparationStopped, PrefixFormatRejected, PrefixPreparation, material, prepare
 from test_full_speech import audio as audio
 from test_listening_prefix import prepared_player, prefix_helper, conflict, prompt_data, TAIL
 from test_listening_prefix import PREFIX, FRAMEWORK
@@ -189,11 +189,29 @@ def test_new_heard_input_can_recover_same_framework_after_format_failure(tmp_pat
     finally:
         prep.close()
     assert len(drafts) == 3  # Initial draft + one repair, then one fresh-input retry.
-    assert prep._calls <= prep.config.listening_prefix_max_calls
+    assert prep._calls == helper.call_count
+
+
+@pytest.mark.parametrize('body', [False, True])
+def test_preparation_can_exceed_legacy_cap_but_freeze_stops_calls(tmp_path, body):
+    p, _ = inputs(tmp_path)
+    p.streaming_output_config.listening_prefix_max_calls = 1
+    helper = Mock(return_value=['result'])
+    prep = PrefixPreparation(p.planner.turn, helper, p.streaming_output_config)
+    try:
+        for _ in range(50):
+            assert prep._complete(body=body, prompt='Prepare') == ['result']
+        assert prep._calls == helper.call_count == 50
+        prep.freeze()
+        with pytest.raises(PreparationStopped):
+            prep._complete(body=body, prompt='After freeze')
+        assert helper.call_count == 50
+    finally:
+        prep.close()
 
 
 @pytest.mark.parametrize('call_cap', [3, 48])
-def test_repeated_bad_format_has_only_one_new_input_retry_and_respects_call_cap(tmp_path, call_cap):
+def test_repeated_bad_format_limits_retries_but_ignores_legacy_call_cap(tmp_path, call_cap):
     p, data = inputs(tmp_path)
     p.streaming_output_config.listening_prefix_max_calls = call_cap
     helper = Mock(return_value=[json.dumps(RECORDED[0])])
@@ -204,17 +222,44 @@ def test_repeated_bad_format_has_only_one_new_input_retry_and_respects_call_cap(
             fresh['heard_transcript'] += f' Heard batch {i}.'
             count = event_count(prep)
             prep.offer(fresh)
-            if prep._calls < call_cap:
-                wait_for(lambda: event_count(prep) == count + 1)
-            elif prep._thread is not None:
-                prep._thread.join(timeout=3)
+            wait_for(lambda: event_count(prep) == count + 1)
         assert prep.peek() is None
-        assert helper.call_count == min(call_cap, 4)
-        if call_cap == 48:
-            assert prep.events[-1]['status'] == 'format_retry_exhausted'
+        assert helper.call_count == 4
+        assert prep.events[-1]['status'] == 'format_retry_exhausted'
     finally:
         prep.close()
     calls = helper.call_count
     data['heard_transcript'] += ' After freeze.'
     prep.offer(data)
     assert helper.call_count == calls
+
+
+@pytest.mark.parametrize('action', ['KEEP', 'continue', 'wait|keep|replace', '', None, []])
+def test_unpublished_candidate_recovers_action_without_skipping_review(tmp_path, action):
+    p, history, _ = prepared_player(tmp_path)
+    candidate = dict(text=PREFIX, draft=TAIL, framework=copy.deepcopy(FRAMEWORK))
+    candidate['framework']['prefix_action'] = action
+    base = prefix_helper(None)
+    def helper(*, prompt, **kwargs):
+        if prompt.startswith('LISTENING PREFIX DRAFT:'):
+            return [json.dumps(candidate)]
+        assert 'REPAIR:' not in prompt
+        return base(prompt=prompt, **kwargs)
+    result = prepare(material(p, p.status, history), helper, p.streaming_output_config)
+    assert result['framework']['prefix_action'] == 'keep'
+    assert result['text'] == PREFIX
+    assert result['audits'][-1]['semantic_review']
+    assert result['audits'][-1]['accepted']
+
+
+def test_recovered_action_does_not_bypass_stance_review(tmp_path):
+    p, history, _ = prepared_player(tmp_path)
+    candidate = dict(text=PREFIX, draft=TAIL, framework=copy.deepcopy(FRAMEWORK))
+    candidate['framework']['prefix_action'] = 'continue'
+    rejecting = prefix_helper(None, review_edit=lambda verdict, payload: conflict(verdict, payload))
+    def helper(*, prompt, **kwargs):
+        if prompt.startswith(('LISTENING PREFIX DRAFT:', 'LISTENING PREFIX REPAIR:')):
+            return [json.dumps(candidate)]
+        return rejecting(prompt=prompt, **kwargs)
+    with pytest.raises(SegmentRejected, match='publication review'):
+        prepare(material(p, p.status, history), helper, p.streaming_output_config)

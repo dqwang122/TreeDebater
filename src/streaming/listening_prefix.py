@@ -327,6 +327,15 @@ def prepare(data, helper, config, *, endpoint=False, max_time=None,
         if isinstance(framework, dict) and 'reason' not in framework:
             framework['reason'] = 'Author did not provide a framework explanation.'
             normalizations.append(dict(field='framework.reason', action='record_missing_explanation'))
+        # A complete unpublished speech is a new candidate, not an instruction
+        # to mutate a committed prefix. The listening overview owns replacement
+        # decisions. Recover malformed action metadata here only; readiness,
+        # stance, prose and publication review remain independently validated.
+        if (isinstance(framework, dict) and framework.get('ready') is True
+                and framework.get('prefix_action') not in ('wait', 'keep', 'replace')):
+            framework['prefix_action'] = 'keep'
+            normalizations.append(dict(field='framework.prefix_action',
+                                       action='keep_unpublished_candidate'))
         framework_errors = []
         try:
             if not parse_overview(framework)['ready']:

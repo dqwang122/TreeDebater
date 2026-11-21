@@ -6,6 +6,7 @@ No audio or conversation state is committed while a candidate is being prepared.
 """
 import copy
 import json
+import re
 
 from .branch_planning import material_version
 from .constraint_review import (REVIEW_INSTRUCTIONS, REVISION_INSTRUCTIONS,
@@ -21,10 +22,25 @@ from utils.tool import logger
 def _json_object(raw):
     if not isinstance(raw, str):
         raise SegmentRejected("Expected a JSON speech segment")
+    content = raw.strip().removeprefix('```json').removesuffix('```').strip()
     try:
-        value = json.loads(raw.strip().removeprefix('```json').removesuffix('```').strip())
+        value = json.loads(content)
     except ValueError as exc:
-        raise SegmentRejected("Malformed speech segment JSON") from exc
+        # Some providers emit a malformed draft followed by an explicit clean
+        # replacement. Accept only an intact final object, never repaired text
+        # or an inner fragment. All caller schema/publication checks still run.
+        value = None
+        for match in re.finditer(r'\n[ \t]*(?=\{)', content):
+            start = match.end()
+            try:
+                candidate, end = json.JSONDecoder().raw_decode(content, start)
+            except ValueError:
+                continue
+            if isinstance(candidate, dict) and not content[end:].strip():
+                value = candidate
+                break
+        if value is None:
+            raise SegmentRejected("Malformed speech segment JSON") from exc
     if not isinstance(value, dict):
         raise SegmentRejected("Expected a JSON object")
     return value
